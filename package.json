@@ -1,0 +1,15 @@
+{
+  "name": "bip-mcp-server",
+  "version": "1.0.0",
+  "description": "Model Context Protocol Server for BIP Portal",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mcp",
+    "ai"
+  ],
+  "author": "Venkat, Thanushri, Vidhyaa",
+  "license": "ISC"
+}

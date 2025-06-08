@@ -1,0 +1,92 @@
+<project_overview>
+This project is a Python-based MCP (Model Context Protocol) server designed to support an AI-assistant system for the BIP Portal of Bannari Amman Institute of Technology. The MCP server serves as a backend component that handles **AI-prompt orchestration**, **context resolution**, and **user-specific completions** by leveraging mock BIP portal data and authenticated requests via OAuth tokens.
+
+The goal is to create a modular, testable, and production-ready FastAPI server that exposes REST APIs used by the frontend and other services.
+
+The project directory is structured as a **monorepo**:
+
+apps/
+  api/    ← backend for website (not part of this project)
+  web/    ← frontend (not part of this project)
+
+packages/
+  mcp_server/ ← this is where all your work must happen
+
+package.json
+</project_overview>
+
+<project_mission>
+Build a FastAPI-powered MCP server that:
+- Authenticates using Google OAuth2 (validates Bearer tokens)
+- Resolves student-specific context from the BIP portal (via mock data for now)
+- Accepts prompts + context, and returns AI-generated completions
+- Serves as an AI backend that enables intelligent, personalized, and secure functionality for the BIP frontend
+</project_mission>
+
+<tech_stack>
+- Language: Python 3.11+
+- Framework: FastAPI
+- Auth: Google OAuth2 Bearer token verification
+- Structure: Modular architecture using routers, services, and auth
+- No DB: Use mocked data sources initially
+- Deployment ready: All code should be clean, documented, and testable
+</tech_stack>
+
+<directory_expectations>
+All code you generate must go under:
+
+`packages/mcp_server/`
+
+Structure it like this:
+- `main.py`: FastAPI app bootstrap
+- `routers/`: All API route definitions
+- `services/`: Core logic like context resolution and prompt handling
+- `auth/`: Google OAuth token validation logic
+- `tests/`: Unit tests (especially for services)
+
+Do not write code in `apps/api/` or `apps/web/`.
+</directory_expectations>
+
+<expected_endpoints>
+1. `GET /api/contextual?student_id=...`
+   - Fetches contextual academic/user data for that student (mock data only)
+
+2. `POST /api/prompt`
+   - Accepts a prompt and optional context payload
+   - Returns a completed AI response (can be stubbed initially)
+
+All endpoints require valid `Authorization: Bearer <token>` headers.
+</expected_endpoints>
+
+<key_guidelines>
+- Token verification must be done using Google’s public keys (JWKS)
+- Student context is mocked using a local JSON file or Python dictionary
+- The `prompt` endpoint simulates LLM completions—use placeholder logic or simple rules
+- Code must include proper documentation, type hints, and error handling
+- Every function must be testable; write unit tests for service logic
+</key_guidelines>
+
+<responsibilities_of_cline_ai>
+You are responsible for:
+- Writing the server in full, step by step, one logical block at a time
+- Keeping the project memory **accurate and updated**
+- If the user ever changes the project structure, tech stack, or functionality:
+  → You must **update this memory_bank prompt** to reflect those changes
+
+This memory_bank must stay **fully in sync** with the actual project reality at all times.
+
+Whenever a new file, route, service, or spec is added, be proactive and modify this memory accordingly.
+
+When unsure, ask clarifying questions or review existing code.
+</responsibilities_of_cline_ai>
+
+<future_expansion_note>
+Once the MVP is complete with stubbed context and prompt logic, the user intends to:
+- Integrate real BIP portal data securely via authorized APIs
+- Replace stubbed AI responses with real LLM completions (e.g., OpenAI API)
+- Possibly add Redis/Mongo for context caching and persistence
+</future_expansion_note>
+
+<summary>
+Your job is to help build an intelligent, extensible backend AI-assistant server with secure access, clear logic, and adaptable design. This memory_bank is your source of truth. Maintain it diligently and update it as the project evolves.
+</summary>

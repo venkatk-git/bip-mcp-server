@@ -1,0 +1,42 @@
+{
+    "manifest_version": 3,
+    "name": "BIP Session Helper for MCP",
+    "version": "0.1.0",
+    "description": "Sends BIP session information to the MCP AI Assistant.",
+    "permissions": [
+        "cookies",
+        "storage", 
+        "activeTab", 
+        "declarativeNetRequest" 
+    ],
+    "host_permissions": [
+        "https://bip.bitsathy.ac.in/*" 
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup.html", 
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://bip.bitsathy.ac.in/*"
+            ],
+            "js": [
+                "content_script.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    }
+}

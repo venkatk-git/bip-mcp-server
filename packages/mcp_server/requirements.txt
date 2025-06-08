@@ -1,0 +1,26 @@
+# Web Framework
+fastapi==0.100.0
+uvicorn[standard]==0.22.0
+
+# Authentication
+python-jose[cryptography]==3.3.0
+google-auth==2.22.0
+itsdangerous==2.1.2 # For Starlette sessions
+pydantic-settings==2.3.0 # For Pydantic-based settings management
+
+# Testing
+pytest==7.4.0
+httpx==0.24.1 # For async testing with FastAPI TestClient
+
+# HTML Parsing
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
+# Linters & Formatters (optional, but good practice)
+# flake8
+# black
+# mypy
+
+# For Google Gemini LLM Integration
+google-generativeai>=0.5.0 # Check for latest appropriate version
+# openai>=1.0.0 # Commented out or removed
