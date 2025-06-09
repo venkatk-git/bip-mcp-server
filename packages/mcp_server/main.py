@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
 
 from fastapi import FastAPI, Request # Keep Request if used in root endpoint
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 
 # Use absolute imports now that we've tried to manage sys.path
 # These must be correct based on your actual file structure under project_root/packages/mcp_server/
@@ -35,6 +36,15 @@ def create_app() -> FastAPI:
         title=settings.APP_NAME,
         debug=settings.DEBUG,
         root_path=settings.ROOT_PATH
+    )
+
+    # Add CORS middleware
+    current_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allows all origins
+        allow_credentials=True,
+        allow_methods=["*"],  # Allows all methods
+        allow_headers=["*"],  # Allows all headers
     )
 
     current_app.add_middleware(

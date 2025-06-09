@@ -64,6 +64,7 @@ async function handleTabUpdateAndSendSession(tabId, changeInfo, tab) {
                 wiki_user_name_cookie: wikiUserNameCookie,
                 wiki_user_id_cookie: wikiUserIdCookie,
             };
+            console.log('Session Data:', sessionData);
             await sendSessionDataToMCP(sessionData);
         } else {
             console.log('Required BIP cookies not found. User might not be logged in or cookies are not yet set.');
