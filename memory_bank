@@ -13,6 +13,9 @@ packages/
   mcp_server/ ← this is where all your work must happen
 
 package.json
+
+packages/
+  bip-extension/ ← Chrome extension to send BIP session to MCP server
 </project_overview>
 
 <project_mission>
@@ -90,3 +93,45 @@ Once the MVP is complete with stubbed context and prompt logic, the user intends
 <summary>
 Your job is to help build an intelligent, extensible backend AI-assistant server with secure access, clear logic, and adaptable design. This memory_bank is your source of truth. Maintain it diligently and update it as the project evolves.
 </summary>
+
+<bip_extension_overview>
+The `bip-extension` is a Chrome browser extension designed to capture session information from the Bannari Amman Institute of Technology's BIP portal (`https://bip.bitsathy.ac.in/`) and send it to the MCP server.
+
+**Purpose:**
+- To provide the MCP server with the necessary session context (cookies) from the BIP portal. This allows the MCP server to potentially make authenticated requests to the BIP portal on behalf of the user or use session details to personalize responses.
+
+**Key Files & Responsibilities:**
+- `manifest.json`:
+    - Defines the extension's permissions (cookies, storage, activeTab, declarativeNetRequest), host permissions for `https://bip.bitsathy.ac.in/*`.
+    - Registers the background service worker (`background.js`).
+    - Defines the browser action popup (`popup.html`).
+    - Registers a content script (`content_script.js`) to run on BIP portal pages.
+- `background.js`:
+    - Listens for tab updates on the BIP portal.
+    - When a BIP portal tab is fully loaded, it attempts to retrieve `bip_session`, `XSRF-TOKEN`, `wiki_wiki_UserName`, and `wiki_wiki_UserID` cookies.
+    - Sends these cookies in a JSON payload to the MCP server endpoint: `http://localhost:8000/bip/session/bip` via a POST request.
+    - Updates the extension badge to 'OK' on success or 'ERR' on failure.
+    - Includes logic for a manual trigger via `chrome.action.onClicked` and a potential message listener for `MANUAL_SYNC_REQUEST` from the popup.
+- `content_script.js`:
+    - Currently logs a message to the console.
+    - Contains commented-out example code for accessing `sessionStorage` (e.g., for `XSRF-TOKEN`) and sending it to `background.js` via `chrome.runtime.sendMessage`. This is not actively used.
+- `popup.html`:
+    - Provides a simple UI with a status message and a "Manual Sync" button.
+- `popup.js`:
+    - Handles the "Manual Sync" button click.
+    - Attempts to send a `MANUAL_SYNC_REQUEST` message to `background.js` to trigger the cookie fetching and sending process.
+    - Displays basic status updates in the popup.
+
+**Interaction with MCP Server:**
+- The extension sends a POST request to `http://localhost:8000/bip/session/bip` (defined in `background.js` as `MCP_SERVER_ENDPOINT`).
+- The request body is a JSON object containing the extracted cookies:
+  ```json
+  {
+    "bip_session_cookie": "...",
+    "xsrf_token_cookie": "...",
+    "wiki_user_name_cookie": "...",
+    "wiki_user_id_cookie": "..."
+  }
+  ```
+- The MCP server is expected to have an endpoint at `/bip/session/bip` to receive this data. This endpoint is implemented in `packages/mcp_server/routes/bip_routes.py` and uses the `BipSessionData` model from `packages/mcp_server/models/bip_models.py`.
+</bip_extension_overview>

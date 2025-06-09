@@ -74,6 +74,140 @@ async def get_department_id_by_name(request: Request, department_name: str) -> O
             return int(dept["id"]) 
     return None
 
+async def get_student_details_from_session(request: Request) -> Optional[Dict[str, Any]]:
+    """
+    Fetches the logged-in student's details (like department_id, department_name, current_semester)
+    using information from the BIP session.
+    """
+    bip_session_data = request.session.get('bip_session_data')
+    if not bip_session_data:
+        print("Error in get_student_details_from_session: BIP session data not found.")
+        return None
+
+    user_bip_id_str = bip_session_data.get("wiki_user_id_cookie")
+    user_bip_name = bip_session_data.get("wiki_user_name_cookie")
+
+    student_api_path = None
+    
+    # Try to use user_bip_id_str as a numeric ID first
+    numeric_user_id = None
+    if user_bip_id_str:
+        try:
+            numeric_user_id = int(user_bip_id_str) # Check if it's a number
+        except ValueError:
+            # If user_bip_id_str is not a number, it might be the username/email.
+            # In this case, we might prefer user_bip_name if it also exists and is different,
+            # or just use user_bip_id_str as the search term if user_bip_name is absent.
+            if not user_bip_name: # If user_bip_name is missing, use user_bip_id_str for search
+                 user_bip_name = user_bip_id_str
+            numeric_user_id = None # Ensure it's None so we fall to search by name
+
+    if numeric_user_id is not None:
+        student_api_path = f"/nova-api/students/{numeric_user_id}"
+        print(f"--- Attempting to fetch student details by NUMERIC ID: {numeric_user_id} from {student_api_path} ---")
+    elif user_bip_name: # Fallback to searching by name (which could be from user_bip_name or user_bip_id_str if it wasn't numeric)
+        # Clean the name if it was URL encoded from the cookie (e.g. email)
+        # However, wiki_user_name_cookie is usually not URL encoded itself.
+        # The value from session should be the raw cookie value.
+        search_term = user_bip_name
+        if '%' in search_term: # Simple check if it might be URL encoded
+            try:
+                search_term = urllib.parse.unquote(search_term)
+            except Exception:
+                pass # Use as is if unquoting fails
+        
+        encoded_search_term = urllib.parse.quote(search_term)
+        student_api_path = f"/nova-api/students?search={encoded_search_term}"
+        print(f"--- Attempting to fetch student details by SEARCH TERM: '{search_term}' from {student_api_path} ---")
+    else:
+        print("Error in get_student_details_from_session: No user ID or name in BIP session for student lookup.")
+        return None
+
+    try:
+        # Fetching a single student record, so fetch_all_pages=False (default) is fine.
+        student_raw_data = await fetch_bip_data(request, student_api_path, accept_header="application/json")
+        
+        # The student API when fetching by ID might return the resource directly, not in a 'resources' list.
+        # Or if by search, it will be in 'resources'. We need to handle both.
+        
+        student_resource = None
+        if isinstance(student_raw_data, dict):
+            if "resources" in student_raw_data and isinstance(student_raw_data["resources"], list) and student_raw_data["resources"]:
+                student_resource = student_raw_data["resources"][0] # Take the first if search returned multiple
+            elif "data" in student_raw_data and isinstance(student_raw_data["data"], dict): # Direct ID lookup often has 'data' as the resource
+                student_resource = student_raw_data["data"]
+            elif "id" in student_raw_data: # Sometimes the root object is the resource itself
+                 student_resource = student_raw_data
+
+
+        if not student_resource or not isinstance(student_resource, dict):
+            print(f"Error in get_student_details_from_session: Could not find student resource in response from {student_api_path}. Response: {str(student_raw_data)[:200]}")
+            return None
+
+        # Now parse the student_resource. Field names are assumptions.
+        # We need to inspect an actual student API response to get these right.
+        # Example: student_resource might look like:
+        # { "id": {"value": 123}, "fields": [ {"attribute": "name", "value": "Test Student"}, ... ] }
+        # Or attributes: { "name": "Test Student", "department_id": 31, "current_semester": 4 }
+        
+        details = {}
+        
+        # Extract ID
+        s_id_obj = student_resource.get("id")
+        if isinstance(s_id_obj, dict) and "value" in s_id_obj:
+            details["id"] = s_id_obj["value"]
+        elif s_id_obj is not None:
+            details["id"] = s_id_obj
+
+        fields_list = student_resource.get("fields", [])
+        if not isinstance(fields_list, list): # Should always be a list based on example
+            print(f"Warning: 'fields' is not a list in student resource for user '{user_bip_id_str or user_bip_name}'.")
+            fields_list = []
+
+        department_name_from_field = None
+        department_id_from_field = None
+        semester_from_field = None
+
+        for field in fields_list:
+            if not isinstance(field, dict): continue
+            attribute = field.get("attribute")
+            if attribute == "department":
+                department_name_from_field = field.get("value")
+                # The 'department' field also has 'belongsToId' which is the department_id
+                if field.get("belongsToRelationship") == "department": # Ensure it's the correct relationship
+                    department_id_from_field = field.get("belongsToId")
+            elif attribute == "semester":
+                semester_from_field = field.get("value")
+        
+        details["department_name"] = department_name_from_field
+        details["department_id"] = department_id_from_field
+        details["current_semester"] = semester_from_field
+        
+        # Validate essential fields
+        if details.get("department_id") is None or details.get("current_semester") is None:
+            # department_name is good to have but department_id is crucial for filtering if available
+            print(f"Warning: Missing department_id or current_semester in student details for user '{user_bip_id_str or user_bip_name}'. Details found: {details}")
+            # Return None if critical info is missing, as the calling function relies on these.
+            # Or return partial, and let caller handle. For now, let's be strict.
+            if details.get("department_id") is None: # Department ID is more critical for precise filtering
+                 print("Critical detail department_id missing.")
+                 return None
+            # If only semester is missing, maybe it can be defaulted or handled by LLM, but for now, require it.
+            if details.get("current_semester") is None:
+                 print("Critical detail current_semester missing.")
+                 return None
+        
+        print(f"--- Successfully fetched and parsed student details: {details} ---")
+        return details
+
+    except HTTPException as e:
+        print(f"HTTPException in get_student_details_from_session for {student_api_path}: {e.detail}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error in get_student_details_from_session for {student_api_path}: {e}")
+        return None
+
+
 async def fetch_bip_data(
     request: Request, 
     target_path_with_params: str, # Renamed to reflect it might have params

@@ -24,8 +24,18 @@ BIP_API_ENDPOINTS: List[ApiEndpointInfo] = [
     },
     {
         "path": "/nova-api/student-activity-masters",
-        "description": "Provides a list of student activities and events (e.g., paper presentations, hackathons, competitions) recognized by the college. Useful for finding events by name, category, organizer, or location (e.g., 'events in KCT', 'hackathons by IEEE'). Includes details like event name, organizer, dates, location, registration links, and rewards eligibility.",
-        "data_schema_hint": "Returns a list of event objects. Key fields include 'id', 'event_name', 'event_code', 'organizer', 'web_url', 'event_category', 'status', 'start_date', 'end_date', 'location', 'event_level', 'rewards_eligible'."
+        "description": "Provides a list of available student activities, events, workshops, hackathons, and competitions (including technical competitions, paper presentations, etc.) recognized by the college. Useful for finding events by name, type (e.g., 'technical competition'), category, organizer, or location. Includes details like event name, organizer, dates, location, registration links, and rewards eligibility.",
+        "data_schema_hint": "Returns a list of event objects. Key fields include 'id', 'event_name', 'event_code', 'organizer', 'web_url', 'event_category' (e.g., 'Competition', 'Paper Presentation', 'Hackathon'), 'status', 'start_date', 'end_date', 'location', 'event_level', 'rewards_eligible'."
+    },
+    {
+        "path": "/nova-api/student-achievement-loggers",
+        "description": "Retrieves the logged-in student's personal record of achievements, event participations, paper presentations, and competition entries. Best for questions specifically asking for 'my achievements', 'my participations', 'my logged activities', or 'my paper presentation records'. This shows what the specific student has recorded.",
+        "data_schema_hint": "Returns a list of the student's individual achievement/activity log items. Key fields include 'id', 'students' (student info), 'event_category', 'student_activity_masters' (details of the master event like name, organizer), 'from_date', 'to_date', 'mode_of_participate', 'iqac_verification' (status like Approved, Initiated)."
+    },
+    {
+        "path": "/nova-api/academic-course-faculty-mappings",
+        "description": "Shows faculty assigned to the courses the logged-in student is enrolled in for specific departments, semesters, and academic years. Best for questions like 'Who teaches my [Course Name] course?', 'Which faculties are teaching me this semester?', or 'List my current course faculty'. Also useful for general queries like 'Who teaches [Course Name] to [Department] students?'.",
+        "data_schema_hint": "Returns a list of course-faculty mapping records relevant to the student or query. Key fields include 'id', 'faculties' (faculty details string), 'academic_courses' (course details string), 'academic_years' (year string), 'student_department_id' (list of department IDs), 'student_semester', 'status'."
     }
 ]
 

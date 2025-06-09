@@ -101,39 +101,50 @@ async def get_answer_from_llm(
         
         # Construct a more targeted prompt if it's a list-by-department query
         if is_list_by_department_query:
-            # Attempt to extract the department name from the original user question for the chunk prompt
-            # This is a simplified extraction for the prompt context.
-            # A more robust way would be to pass the already extracted department name.
             department_name_in_query = ""
-            # Basic extraction - can be improved with regex or another LLM call if needed for precision here
             if "from " in user_question and " department" in user_question.lower():
                 try:
                     start_index = user_question.lower().find("from ") + 5
                     end_index = user_question.lower().find(" department")
                     department_name_in_query = user_question[start_index:end_index].strip()
-                except:
-                    pass # Fallback to generic prompt part
+                except: pass
 
             prompt_parts = [
-                f"The user's original question was to list students from a department (likely '{department_name_in_query}').",
-                "Based ONLY on the student data CHUNK provided below, list the full names of all students who match this department query.",
-                "Each name should be on a new line. If no students in this CHUNK match, respond with the exact phrase: NO_MATCHING_STUDENTS_IN_CHUNK",
+                f"You're a helpful and slightly witty AI assistant for the BIP. The user wants a list of students, likely from the '{department_name_in_query}' department.",
+                "Based ONLY on this CHUNK of student data, list the full names of students matching the department query.",
+                "Each name on a new line, please! If this chunk is a dud (no matches), just say: NO_MATCHING_STUDENTS_IN_CHUNK",
                 "\nProvided data CHUNK:\n",
                 context_str_chunk
             ]
-        else: # Original generic prompt for other types of questions
+        elif query_details and query_details.get("type") == "specific_entity_details":
+             entity_name = query_details.get("value", "that specific thing")
+             prompt_parts = [
+                f"Alright, you're the BIP's top info-detective! The user is asking about '{user_question}'.",
+                f"Focus on finding details about '{entity_name}' in this CHUNK of data.",
+                "Answer based *only* on the provided data chunk. Be clear, and if you can, a little bit charming (but still professional!).",
+                "If the specific info isn't in this chunk, say something like 'Hmm, can't find details for {entity_name} in this bit of data.'",
+                "\nProvided data CHUNK:\n",
+                context_str_chunk,
+                "\nUser's question (answer from CHUNK only):\n",
+                user_question
+             ]
+        else: # Original generic prompt for other types of questions, with a touch of personality
             prompt_parts = [
-                "You are an AI assistant for the BIP (BIT Information Portal). You will be provided with a chunk of data extracted from the BIP system in JSON format and a user's question about this data.",
-                "Your task is to answer the user's question based *only* on the provided data chunk. Focus only on the data given in this specific chunk.",
-                "If the question asks for a list (e.g., 'List all students'), provide the relevant items from THIS CHUNK ONLY.",
-                "Do not make up information or answer questions outside the scope of the given data chunk.",
-                "If the data chunk does not contain the answer, clearly state that the information is not available in this specific data chunk or provide an empty list if appropriate for a listing question.",
-                "Be concise.",
+                "You are a friendly and helpful AI assistant for the BIP (BIT Information Portal), with a knack for being clear and maybe a little bit fun.",
+                "You'll get a chunk of data from BIP and a user's question.",
+                "Your mission, should you choose to accept it, is to answer based *only* on the data in THIS CHUNK.",
+                "No outside knowledge, no guessing! If the info isn't in the chunk, just say so (e.g., 'Sorry, that info isn't in this slice of data!').",
+                "If it's a list they want, list items from this chunk. Keep it concise but human.",
                 "\nProvided data CHUNK:\n",
                 context_str_chunk,
                 "\nUser's original question (answer based on the CHUNK above):\n",
                 user_question
             ]
+        
+        print(f"--- Debug LLM Answering: Sending request to Gemini for chunk {i+1}/{len(data_chunks)}. Model: {model_name}.")
+        # For very verbose debugging, you could print the full prompt_parts, but be wary of log size.
+        # print(f"--- Debug LLM Answering: Prompt for chunk {i+1}: {prompt_parts}")
+
 
         try:
             response = await model.generate_content_async(prompt_parts)
@@ -251,8 +262,12 @@ async def determine_api_path_from_query(user_question: str, available_apis: List
 
     prompt = f"""Your task is to select the single most appropriate API endpoint path from the provided list to answer the user's question.
 The API endpoints provide different types of student academic data.
-Respond with ONLY the API path string (e.g., "/nova-api/students").
-If no listed API endpoint can answer the question, respond with "NO_PATH_FOUND".
+    Respond with ONLY the API path string (e.g., "/nova-api/students").
+    If no listed API endpoint can answer the question, respond with "NO_PATH_FOUND".
+
+    Consider the following:
+    - If the user's question uses possessive terms like "my" (e.g., "my achievements", "my feedback", "my details"), prioritize API endpoints whose descriptions align with personal data retrieval for the logged-in user.
+    - Match keywords from the question to the API descriptions and data schema hints.
 
 Available API Endpoints:
 {formatted_apis}
@@ -368,11 +383,21 @@ The query types are: "specific_entity_details", "list_by_category", or "general_
     *   Example for "Are there any hackathons?": {{"type": "list_by_category", "category_type": "event_category", "value": "Hackathon"}}
     *   Example for "Events happening in KCT": {{"type": "list_by_category", "category_type": "location", "value": "KCT"}}
 
-3.  **"general_listing"**: The question is a general request for a list from an endpoint (e.g., "What student activities are available?", "Show some students."), or no specific identifier/category is clearly mentioned.
-    *   Respond: {{"type": "general_listing", "value": null}}
+3.  **"general_listing"**: The question is a general request for a list from an endpoint, or no specific identifier/category is clearly mentioned.
+    *   If the question contains potential keywords that could be used for a general search (but aren't specific entities or categories already handled), extract them.
+    *   Example: "Show me student achievements related to hackathons and AI" -> {{"type": "general_listing", "value": "hackathons AI"}}
+    *   Example: "What student activities are available?" -> {{"type": "general_listing", "value": null}}
+    *   Example: "Show some students." -> {{"type": "general_listing", "value": null}}
+    *   Respond: {{"type": "general_listing", "value": "EXTRACTED_KEYWORDS_AS_STRING_OR_NULL"}}
+
+4.  **"user_context_dependent_query"**: The question requires information about the logged-in user's context (like their department or current courses) to be resolved before querying a data endpoint.
+    *   Keywords: "faculties teaching me", "my teachers", "my current course faculty", "professors for my courses".
+    *   If such a query is identified, respond: {{"type": "user_context_dependent_query", "sub_type": "faculty_for_my_courses", "value": null}} (Value is null as the resolution logic will handle specifics).
+    *   Example for "Faculties teaching me": {{"type": "user_context_dependent_query", "sub_type": "faculty_for_my_courses", "value": null}}
 
 Instructions for extraction:
 -   Be precise. Only extract full, clear identifiers, names, or category values.
+-   **The user may make typos or grammatical errors. Try to understand their intent despite these errors.** For example, if they ask "who is venkatkumr m?", you should still recognize "venkatkumr m" as an attempt at a name.
 -   **If the question is about a specific named entity (e.g., "Tell me about event X", "Who is student Y?"), ALWAYS classify it as "specific_entity_details" and extract the entity name/ID as the value.** Do NOT classify these as "general_listing" or "list_by_category".
 -   Use "list_by_category" only when the user asks for a list based on a general category type (e.g., "list all hackathons", "students in the CS department").
 -   If the question is very broad (e.g., "What can you do?", "Show me some activities") and does not mention any specific entity or category, then use "general_listing".
@@ -405,17 +430,23 @@ Respond with ONLY the JSON object:"""
             if isinstance(result_json, dict) and "type" in result_json: # Value might be null for general_listing
                 # Basic validation of types
                 # Updated list of allowed types
-                if result_json["type"] in ["specific_entity_details", "list_by_category", "general_listing"]:
-                    # Ensure 'value' exists, except for general_listing where it should be null
-                    if result_json["type"] == "general_listing":
-                        result_json["value"] = None # Enforce null for general_listing
+                if result_json["type"] in ["specific_entity_details", "list_by_category", "general_listing", "user_context_dependent_query"]:
+                    # Ensure 'value' exists and is appropriate for the type
+                    if result_json["type"] == "general_listing" or result_json["type"] == "user_context_dependent_query":
+                        # Value can be a string of keywords or null for general_listing
+                        # Value should be null for user_context_dependent_query (or carry a sub_type hint if needed later)
+                        if "value" in result_json and not (isinstance(result_json.get("value"), str) or result_json.get("value") is None):
+                            result_json["value"] = None # Fallback to null
+                        elif "value" not in result_json:
+                             result_json["value"] = None
+                        if result_json["type"] == "user_context_dependent_query" and "sub_type" not in result_json:
+                            # If it's context dependent, but sub_type is missing, treat as general listing to avoid error
+                            print(f"Warning: 'user_context_dependent_query' missing 'sub_type'. Falling back.")
+                            return {"type": "general_listing", "value": None}
                     elif "value" not in result_json or not isinstance(result_json["value"], str):
-                        # For specific_entity_details and list_by_category (if value is expected string)
+                        # For specific_entity_details and list_by_category (value is expected string)
                         if result_json["type"] == "list_by_category" and "category_type" in result_json and result_json.get("value") is None:
-                            # Allow null value for list_by_category if category_type implies it (e.g. "list all hackathons" might have value "Hackathon" or null if just "list hackathons")
-                            # This needs careful thought if value can be optional for list_by_category.
-                            # For now, assume value is required if not general_listing.
-                            pass # Allow if category_type is present and value is None (e.g. list all of a category type)
+                            pass 
                         elif not ("value" in result_json and isinstance(result_json.get("value"), str)):
                             return {"type": "general_listing", "value": None} # Fallback
                     

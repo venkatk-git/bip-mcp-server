@@ -39,24 +39,22 @@ async function sendSessionDataToMCP(data) {
     }
 }
 
-// Listener for when a tab is updated (e.g., after login or navigation)
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+// Reusable function to handle tab updates and send session data
+async function handleTabUpdateAndSendSession(tabId, changeInfo, tab) {
     // Check if the tab is fully loaded and the URL is the BIP portal
-    if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('https://bip.bitsathy.ac.in/')) {
-        console.log('BIP Portal tab updated:', tab.url);
+    // For manual sync, changeInfo might be null or different, so we primarily check tab.url
+    if (tab && tab.url && tab.url.startsWith('https://bip.bitsathy.ac.in/')) {
+        // For onUpdated, ensure status is complete. For manual sync, this check might not be relevant.
+        if (changeInfo && changeInfo.status !== 'complete') {
+            // console.log('Tab update not complete yet or not relevant for BIP session capture.');
+            return;
+        }
+        console.log('Processing BIP Portal tab:', tab.url);
 
-        // Attempt to retrieve cookies.
-        // This is a naive check; ideally, you'd detect a successful login more robustly.
-        // For example, by checking if the URL is a known post-login page.
         const bipSessionCookie = await getCookie('https://bip.bitsathy.ac.in', 'bip_session');
         const xsrfTokenCookie = await getCookie('https://bip.bitsathy.ac.in', 'XSRF-TOKEN');
-        // You mentioned XSRF-TOKEN was also in sessionStorage. If the cookie isn't reliable,
-        // you might need the content script to fetch it and message it to background.js.
-        // For now, let's assume the XSRF-TOKEN cookie is present and usable.
-
         const wikiUserNameCookie = await getCookie('https://bip.bitsathy.ac.in', 'wiki_wiki_UserName');
         const wikiUserIdCookie = await getCookie('https://bip.bitsathy.ac.in', 'wiki_wiki_UserID');
-
 
         if (bipSessionCookie && xsrfTokenCookie) {
             console.log('Found BIP session and XSRF token cookies.');
@@ -69,20 +67,46 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             await sendSessionDataToMCP(sessionData);
         } else {
             console.log('Required BIP cookies not found. User might not be logged in or cookies are not yet set.');
-            // Clear badge if cookies are not found after a page load
             chrome.action.setBadgeText({ text: '' });
         }
     }
+}
+
+// Listener for when a tab is updated
+chrome.tabs.onUpdated.addListener(handleTabUpdateAndSendSession);
+
+// Listener for messages from popup.js or content_script.js
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "MANUAL_SYNC_REQUEST") {
+        console.log("Manual sync request received from popup.");
+        (async () => {
+            try {
+                const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                if (currentTab) {
+                    // Call the handler. Pass null for changeInfo as it's a manual trigger.
+                    await handleTabUpdateAndSendSession(currentTab.id, null, currentTab);
+                    sendResponse({ status: "Sync initiated from background." });
+                } else {
+                    console.error("No active tab found for manual sync.");
+                    sendResponse({ status: "Error: No active tab found." });
+                }
+            } catch (error) {
+                console.error("Error during manual sync:", error);
+                sendResponse({ status: `Error: ${error.message}` });
+            }
+        })();
+        return true; // Indicates you wish to send a response asynchronously
+    }
+    // Add other message handlers here if needed (e.g., for XSRF_TOKEN_FROM_STORAGE)
 });
+
 
 // Optional: Listen for clicks on the extension icon (if you have a popup.html)
+// This now primarily opens the popup. The popup handles manual sync.
 chrome.action.onClicked.addListener((tab) => {
-    // Example: open a popup or trigger a manual sync
-    console.log("Extension icon clicked for tab:", tab.url);
-    // If you want to manually trigger the cookie check and send:
-    if (tab.url && tab.url.startsWith('https://bip.bitsathy.ac.in/')) {
-        chrome.tabs.onUpdated.call(this, tab.id, { status: 'complete' }, tab); // Re-run the logic
-    }
+    console.log("Extension icon clicked. Popup should open.");
+    // Default behavior is to open popup.html if defined in manifest.
+    // If you need to do something else before popup opens, or instead of it, do it here.
 });
 
-console.log('BIP Session Helper background script loaded.');
+console.log('BIP Session Helper background script loaded. Manual sync enabled.');
