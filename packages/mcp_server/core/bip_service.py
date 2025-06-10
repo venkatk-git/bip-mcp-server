@@ -226,14 +226,19 @@ async def fetch_bip_data(
         cookies_dict["wiki_wiki_UserName"] = bip_session_data.get("wiki_user_name_cookie")
     if bip_session_data.get("wiki_user_id_cookie"):
         cookies_dict["wiki_wiki_UserID"] = bip_session_data.get("wiki_user_id_cookie")
+    if bip_session_data.get("app_forward_auth_cookie"): # Check for the new cookie
+        cookies_dict["app_forward_auth"] = bip_session_data.get("app_forward_auth_cookie")
     
-    if not cookies_dict["bip_session"] or not cookies_dict["XSRF-TOKEN"]:
-         raise HTTPException(status_code=400, detail="Essential BIP cookies missing from stored session data.")
+    if not cookies_dict.get("bip_session") or not cookies_dict.get("XSRF-TOKEN"): # Keep existing check for essential cookies
+         raise HTTPException(status_code=400, detail="Essential BIP cookies (bip_session, XSRF-TOKEN) missing from stored session data.")
 
     cookie_parts = []
+    # Order might matter for some servers, typically less critical ones last or as received.
+    # For now, just append.
     if cookies_dict.get("wiki_wiki_UserName"): cookie_parts.append(f"wiki_wiki_UserName={cookies_dict['wiki_wiki_UserName']}")
     if cookies_dict.get("wiki_wiki_UserID"): cookie_parts.append(f"wiki_wiki_UserID={cookies_dict['wiki_wiki_UserID']}")
-    cookie_parts.append(f"XSRF-TOKEN={cookies_dict['XSRF-TOKEN']}")
+    if cookies_dict.get("app_forward_auth"): cookie_parts.append(f"app_forward_auth={cookies_dict['app_forward_auth']}") # Add new cookie
+    cookie_parts.append(f"XSRF-TOKEN={cookies_dict['XSRF-TOKEN']}") # Standard cookies
     cookie_parts.append(f"bip_session={cookies_dict['bip_session']}")
     cookie_header_value = "; ".join(cookie_parts)
 

@@ -55,14 +55,16 @@ async function handleTabUpdateAndSendSession(tabId, changeInfo, tab) {
         const xsrfTokenCookie = await getCookie('https://bip.bitsathy.ac.in', 'XSRF-TOKEN');
         const wikiUserNameCookie = await getCookie('https://bip.bitsathy.ac.in', 'wiki_wiki_UserName');
         const wikiUserIdCookie = await getCookie('https://bip.bitsathy.ac.in', 'wiki_wiki_UserID');
+        const appForwardAuthCookie = await getCookie('https://bip.bitsathy.ac.in', 'app_forward_auth'); // Get the new cookie
 
-        if (bipSessionCookie && xsrfTokenCookie) {
-            console.log('Found BIP session and XSRF token cookies.');
+        if (bipSessionCookie && xsrfTokenCookie) { // appForwardAuthCookie is optional but good to have
+            console.log('Found BIP session, XSRF token cookies. AppForwardAuth:', appForwardAuthCookie ? 'Found' : 'Not Found');
             const sessionData = {
                 bip_session_cookie: bipSessionCookie,
                 xsrf_token_cookie: xsrfTokenCookie,
                 wiki_user_name_cookie: wikiUserNameCookie,
                 wiki_user_id_cookie: wikiUserIdCookie,
+                app_forward_auth_cookie: appForwardAuthCookie, // Add to payload
             };
             console.log('Session Data:', sessionData);
             await sendSessionDataToMCP(sessionData);

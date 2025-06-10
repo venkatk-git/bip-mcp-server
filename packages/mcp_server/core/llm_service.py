@@ -116,6 +116,21 @@ async def get_answer_from_llm(
                 "\nProvided data CHUNK:\n",
                 context_str_chunk
             ]
+        elif query_details and query_details.get("type") == "multi_entity_comparison":
+            entities_info = query_details.get("entities", []) # This is a list of dicts
+            entity_names_list = [info.get("name", "Unknown Entity") for info in entities_info if isinstance(info, dict)]
+            entity_list_str = " and ".join(entity_names_list)
+            prompt_parts = [
+                f"You are an AI assistant. The user asked: \"{user_question}\"",
+                f"You have been provided with data for the following individuals: {entity_list_str}.",
+                "Based ONLY on the provided data for these individuals:",
+                "1. Briefly state what type of individuals they are if common (e.g., 'Both are students', 'One is a faculty and one is a student').",
+                "2. Describe any other specific relationships or significant commonalities found in their data (e.g., same department, enrolled in the same course, part of the same project).",
+                "3. If no specific relationship or significant commonality beyond their general type is found, clearly state that.",
+                "Keep your answer concise and informative. Maintain a helpful and slightly witty tone.",
+                "\nProvided data (this is a single CHUNK containing all fetched profiles/data for the entities):\n",
+                context_str_chunk # For multi-entity, context_str_chunk will contain the list of profiles
+            ]
         elif query_details and query_details.get("type") == "specific_entity_details":
              entity_name = query_details.get("value", "that specific thing")
              prompt_parts = [
@@ -188,51 +203,83 @@ async def get_answer_from_llm(
             elif hasattr(e, 'args') and e.args: error_detail = str(e.args[0])
             all_llm_answers.append(f"[Error contacting AI for data chunk {i+1}: {error_detail}]")
 
-    # Combine answers from all chunks.
-    collected_names = set() # Use a set to store names to avoid duplicates if any chunk overlaps or LLM repeats
-    has_actual_content = False
+    # --- Aggregation and Synthesis Logic ---
+    final_answer = "No answer could be formulated based on the provided data." # Default
     
-    # Determine if the original question implies listing students from a department (heuristic, same as above)
-    is_list_by_department_query_for_aggregation = "list" in user_question.lower() and "student" in user_question.lower() and ("department" in user_question.lower() or "dept" in user_question.lower())
-
+    answers_with_content = []
     for ans_from_chunk in all_llm_answers:
         if ans_from_chunk and \
            not ans_from_chunk.startswith("[Error") and \
            not ans_from_chunk.startswith("[No answer") and \
            not ans_from_chunk.startswith("[Empty response") and \
            not ans_from_chunk.startswith("[AI content generation blocked") and \
-           ans_from_chunk != "NO_MATCHING_STUDENTS_IN_CHUNK":
-            
-            has_actual_content = True
-            if is_list_by_department_query_for_aggregation:
-                # Assuming LLM returns names separated by newlines or commas for list queries
-                names_in_chunk = [name.strip() for name in ans_from_chunk.replace(",", "\n").split("\n") if name.strip()]
-                for name in names_in_chunk:
-                    collected_names.add(name)
+           ans_from_chunk.upper() != "NO_MATCHING_STUDENTS_IN_CHUNK": # Case-insensitive check
+            answers_with_content.append(ans_from_chunk.strip())
+
+    if not answers_with_content:
+        return "No relevant information found in the data to answer your question."
+
+    # Determine if this is a simple list aggregation query (e.g., list students by dept)
+    # This relies on the query_details passed into this function.
+    is_simple_list_aggregation = (
+        query_details and
+        query_details.get("type") == "list_by_category" and
+        query_details.get("category_type") == "department_name"
+    )
+    # Add other query types that should be simple list aggregations here if needed.
+
+    if len(answers_with_content) > 1 and not is_simple_list_aggregation:
+        print(f"--- Synthesizing final answer from {len(answers_with_content)} chunks for question: '{user_question}' ---")
+        combined_text_for_synthesis = "\n\n==== NEXT PIECE OF INFORMATION ====\n\n".join(answers_with_content)
+        
+        synthesis_prompt_parts = [
+            "You are an expert AI assistant tasked with synthesizing information.",
+            f"The user's original question was: \"{user_question}\"",
+            "The following are several pieces of information that were retrieved in response to this question, possibly from different segments of a larger dataset.",
+            "Your goal is to combine these pieces into a single, coherent, and comprehensive natural language answer.",
+            "Key instructions for synthesis:",
+            "- Ensure the final answer directly addresses the user's original question.",
+            "- Avoid redundancy. If multiple pieces say the same thing, consolidate it.",
+            "- Maintain a helpful, clear, and slightly witty/human-like tone.",
+            "- Do NOT mention that the information came from different 'chunks', 'pieces', or 'segments'. Present it as one unified response.",
+            "- If the information pieces cover distinct aspects or topics related to the question, organize them logically in your answer.",
+            "- If there are minor contradictions, try to present the information factually or acknowledge the differing details if significant and unavoidable.",
+            "\nCombined Information Pieces (separated by '==== NEXT PIECE OF INFORMATION ===='):\n",
+            combined_text_for_synthesis
+        ]
+        try:
+            # Assuming 'model' is still the genai.GenerativeModel instance from earlier in the function
+            synthesis_response = await model.generate_content_async(synthesis_prompt_parts)
+            if synthesis_response.candidates and synthesis_response.candidates[0].content.parts:
+                final_answer = "".join([part.text for part in synthesis_response.candidates[0].content.parts if hasattr(part, 'text')]).strip()
+                if not final_answer.strip(): # If LLM returns empty string
+                    print("Warning: Synthesis LLM call returned empty content. Falling back to joining chunk answers.")
+                    final_answer = "\n\n".join(answers_with_content) # Fallback
             else:
-                # For non-list queries, just append the whole answer (might need better strategy for other question types)
-                collected_names.add(ans_from_chunk) # Using set here might be odd for non-list answers
-
-    if is_list_by_department_query_for_aggregation:
-        if collected_names:
-            final_answer = "\n".join(sorted(list(collected_names)))
-        elif has_actual_content: # Some chunks responded, but all were "NO_MATCHING..."
-             final_answer = "No students found matching your criteria in the provided data."
-        else: # All chunks resulted in errors or no content
-            final_answer = "Could not retrieve a student list. Issues encountered while processing data."
-    else: # For non-list queries
-        if collected_names: # Should ideally be just one item in the set for non-list queries
-            final_answer = "\n".join(sorted(list(collected_names))) 
-        elif has_actual_content: # Some chunks responded but not with usable answer
-            final_answer = "The AI assistant processed the data but could not formulate a specific answer."
+                print("Warning: Synthesis LLM call failed or returned no candidates/parts. Falling back to joining chunk answers.")
+                final_answer = "\n\n".join(answers_with_content) # Fallback
+        except Exception as e_synth:
+            print(f"Error during synthesis LLM call: {e_synth}. Falling back to joining chunk answers.")
+            final_answer = "\n\n".join(answers_with_content) # Fallback
+    
+    elif is_simple_list_aggregation:
+        # For simple list aggregation (e.g., student names by department)
+        # The per-chunk prompt for these should ideally return just the list items.
+        collected_items_for_list = set()
+        for ans_item_list_str in answers_with_content:
+            # Assuming LLM returns names/items separated by newlines for list queries
+            items_in_chunk = [name.strip() for name in ans_item_list_str.split("\n") if name.strip() and name.upper() != "NO_MATCHING_STUDENTS_IN_CHUNK"]
+            for item_in_list in items_in_chunk:
+                collected_items_for_list.add(item_in_list)
+        
+        if collected_items_for_list:
+            final_answer = "\n".join(sorted(list(collected_items_for_list)))
         else:
-            final_answer = "Could not retrieve an answer. Issues encountered while processing data chunks."
+            final_answer = "No items found matching your criteria in the provided data."
+    else: # Only one chunk with content, or synthesis not needed (e.g. simple list with 1 chunk)
+        final_answer = "\n\n".join(answers_with_content) # Join if multiple (though this path implies 1), or just the single answer
 
-
-    if not final_answer.strip() and not has_actual_content : # No chunks or all chunks were empty and yielded no answer
-        final_answer = "No information found in the provided data to answer the question."
-
-    return final_answer.strip() if final_answer else "No answer could be formulated based on the provided data."
+    return final_answer.strip() if final_answer.strip() else "No answer could be formulated based on the provided data."
 
 
 async def determine_api_path_from_query(user_question: str, available_apis: List[Dict[str, str]], model_name: str = "gemini-1.5-flash-latest") -> str | None:
@@ -395,6 +442,14 @@ The query types are: "specific_entity_details", "list_by_category", or "general_
     *   If such a query is identified, respond: {{"type": "user_context_dependent_query", "sub_type": "faculty_for_my_courses", "value": null}} (Value is null as the resolution logic will handle specifics).
     *   Example for "Faculties teaching me": {{"type": "user_context_dependent_query", "sub_type": "faculty_for_my_courses", "value": null}}
 
+5.  **"multi_entity_comparison"**: The question asks about a relationship, comparison, or commonalities between two or more named entities.
+    *   Keywords: "relation between X and Y", "compare X and Y", "do X and Y have anything in common", "are X and Y in the same department".
+    *   Extract the named entities. If the user specifies a type for an entity (e.g., "Ezhil (faculty)", "Venkatkumar (student)"), extract the type as well. Valid types are "student", "faculty", "course", "department", "event". If no type is specified, the type can be null or omitted.
+    *   Respond: {{"type": "multi_entity_comparison", "entities": [{{"name": "ENTITY1_NAME", "type": "ENTITY1_TYPE_OR_NULL"}}, {{"name": "ENTITY2_NAME", "type": "ENTITY2_TYPE_OR_NULL"}}, ...], "value": "BRIEF_DESCRIPTION_OF_COMPARISON_TYPE_IF_OBVIOUS_ELSE_NULL"}}
+    *   Example for "Is there any relation between Venkatkumar and Thanushri?": {{"type": "multi_entity_comparison", "entities": [{{"name": "Venkatkumar", "type": null}}, {{"name": "Thanushri", "type": null}}], "value": "general relation"}}
+    *   Example for "Are Venkatkumar and Thanushri in the same department?": {{"type": "multi_entity_comparison", "entities": [{{"name": "Venkatkumar", "type": null}}, {{"name": "Thanushri", "type": null}}], "value": "same department check"}}
+    *   Example for "Who is Ezhil R (faculty) to Venkatkumar M (student)?": {{"type": "multi_entity_comparison", "entities": [{{"name": "Ezhil R", "type": "faculty"}}, {{"name": "Venkatkumar M", "type": "student"}}], "value": "general relation"}}
+
 Instructions for extraction:
 -   Be precise. Only extract full, clear identifiers, names, or category values.
 -   **The user may make typos or grammatical errors. Try to understand their intent despite these errors.** For example, if they ask "who is venkatkumr m?", you should still recognize "venkatkumr m" as an attempt at a name.
@@ -430,29 +485,37 @@ Respond with ONLY the JSON object:"""
             if isinstance(result_json, dict) and "type" in result_json: # Value might be null for general_listing
                 # Basic validation of types
                 # Updated list of allowed types
-                if result_json["type"] in ["specific_entity_details", "list_by_category", "general_listing", "user_context_dependent_query"]:
+                if result_json["type"] in ["specific_entity_details", "list_by_category", "general_listing", "user_context_dependent_query", "multi_entity_comparison"]:
                     # Ensure 'value' exists and is appropriate for the type
                     if result_json["type"] == "general_listing" or result_json["type"] == "user_context_dependent_query":
-                        # Value can be a string of keywords or null for general_listing
-                        # Value should be null for user_context_dependent_query (or carry a sub_type hint if needed later)
                         if "value" in result_json and not (isinstance(result_json.get("value"), str) or result_json.get("value") is None):
-                            result_json["value"] = None # Fallback to null
+                            result_json["value"] = None 
                         elif "value" not in result_json:
                              result_json["value"] = None
                         if result_json["type"] == "user_context_dependent_query" and "sub_type" not in result_json:
-                            # If it's context dependent, but sub_type is missing, treat as general listing to avoid error
                             print(f"Warning: 'user_context_dependent_query' missing 'sub_type'. Falling back.")
                             return {"type": "general_listing", "value": None}
+                    elif result_json["type"] == "multi_entity_comparison":
+                        if "entities" not in result_json or not isinstance(result_json["entities"], list) or not result_json["entities"]:
+                            print(f"Warning: 'multi_entity_comparison' missing or invalid 'entities' list. Falling back.")
+                            return {"type": "general_listing", "value": None}
+                        # Validate structure of each entity in the list
+                        for entity_item in result_json["entities"]:
+                            if not isinstance(entity_item, dict) or "name" not in entity_item:
+                                print(f"Warning: Invalid entity item in 'multi_entity_comparison': {entity_item}. Falling back.")
+                                return {"type": "general_listing", "value": None}
+                            if "type" not in entity_item: # Ensure type key exists, can be null
+                                entity_item["type"] = None
+                        if "value" not in result_json: 
+                            result_json["value"] = None
                     elif "value" not in result_json or not isinstance(result_json["value"], str):
-                        # For specific_entity_details and list_by_category (value is expected string)
                         if result_json["type"] == "list_by_category" and "category_type" in result_json and result_json.get("value") is None:
                             pass 
                         elif not ("value" in result_json and isinstance(result_json.get("value"), str)):
-                            return {"type": "general_listing", "value": None} # Fallback
+                            return {"type": "general_listing", "value": None} 
                     
-                    # Ensure 'category_type' exists if type is 'list_by_category'
                     if result_json["type"] == "list_by_category" and "category_type" not in result_json:
-                        return {"type": "general_listing", "value": None} # Fallback
+                        return {"type": "general_listing", "value": None} 
 
                     return result_json
                 # else: # LLM returned unexpected type

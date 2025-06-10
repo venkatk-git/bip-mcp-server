@@ -6,3 +6,4 @@ class BipSessionData(BaseModel):
     xsrf_token_cookie: str
     wiki_user_name_cookie: Optional[str] = None
     wiki_user_id_cookie: Optional[str] = None
+    app_forward_auth_cookie: Optional[str] = None # New field

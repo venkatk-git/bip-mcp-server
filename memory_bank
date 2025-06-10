@@ -1,137 +1,203 @@
-<project_overview>
-This project is a Python-based MCP (Model Context Protocol) server designed to support an AI-assistant system for the BIP Portal of Bannari Amman Institute of Technology. The MCP server serves as a backend component that handles **AI-prompt orchestration**, **context resolution**, and **user-specific completions** by leveraging mock BIP portal data and authenticated requests via OAuth tokens.
+# BIP MCP Server Project - Memory Bank
 
-The goal is to create a modular, testable, and production-ready FastAPI server that exposes REST APIs used by the frontend and other services.
+## I. Project Mission & Core Goal
 
-The project directory is structured as a **monorepo**:
+-   **Mission**: To create an AI-powered assistant that integrates with the BIT Information Portal (BIP) to provide users (students, faculty) with intuitive, natural language access to their academic and administrative data.
+-   **Core Goal**: Enable users to ask questions in plain English and receive accurate, relevant answers sourced directly from BIP APIs, processed and synthesized by LLMs.
 
-apps/
-  api/    ← backend for website (not part of this project)
-  web/    ← frontend (not part of this project)
+## II. Current System Architecture & Components
 
-packages/
-  mcp_server/ ← this is where all your work must happen
+1.  **`packages/mcp_server` (FastAPI Backend)**:
+    *   **Role**: Main application logic, BIP API interaction, LLM orchestration.
+    *   **Key Endpoints**:
+        *   `/bip/session/bip`: Receives and stores BIP session cookies from the Chrome extension. Uses Starlette server-side sessions.
+        *   `/assistant/ask`: Primary endpoint for user queries.
+    *   **Core Services**:
+        *   `core/bip_api_registry.py`: Defines known BIP API endpoints, their descriptions, and data schema hints. Crucial for LLM path selection.
+        *   `core/bip_service.py`: Handles actual HTTP calls to BIP APIs, manages session cookies, pagination, and department data caching. Includes `get_student_details_from_session` for user context.
+        *   `core/llm_service.py`: Contains functions for LLM interactions:
+            *   `determine_api_path_from_query`: Selects the best BIP API path based on user question and API registry.
+            *   `extract_query_type_and_value`: Classifies query intent (specific entity, list by category, general listing, user context dependent) and extracts relevant values/keywords for API parameterization. Includes typo tolerance.
+            *   `get_answer_from_llm`: Generates a natural language answer from fetched BIP data, handles data chunking for large contexts, and incorporates a helpful/witty tone.
+        *   `routes/assistant_routes.py`: Orchestrates the query processing flow for `/assistant/ask`, including rule-based overrides and iterative logic for context-dependent queries (e.g., "Faculties teaching me").
+    *   **Models (`models/bip_models.py`)**: Pydantic models for request/response validation (e.g., `BipSessionData`).
+    *   **Configuration (`config.py`, `.env`)**: Manages settings like `GOOGLE_API_KEY`.
 
-package.json
+2.  **`packages/bip-extension` (Chrome Extension)**:
+    *   **Role**: Captures BIP session cookies (`bip_session`, `XSRF-TOKEN`, `wiki_wiki_UserID`, `wiki_wiki_UserName`, `app_forward_auth`) and sends them to the MCP server.
 
-packages/
-  bip-extension/ ← Chrome extension to send BIP session to MCP server
-</project_overview>
+3.  **`apps/web` (React/Vite Frontend)**:
+    *   **Role**: Intended user interface for the assistant.
+    *   **Status**: Placeholder, future development.
 
-<project_mission>
-Build a FastAPI-powered MCP server that:
-- Authenticates using Google OAuth2 (validates Bearer tokens)
-- Resolves student-specific context from the BIP portal (via mock data for now)
-- Accepts prompts + context, and returns AI-generated completions
-- Serves as an AI backend that enables intelligent, personalized, and secure functionality for the BIP frontend
-</project_mission>
+4.  **`apps/api`**:
+    *   **Role**: Placeholder for potential future standalone API.
+    *   **Status**: Not developed.
 
-<tech_stack>
-- Language: Python 3.11+
-- Framework: FastAPI
-- Auth: Google OAuth2 Bearer token verification
-- Structure: Modular architecture using routers, services, and auth
-- No DB: Use mocked data sources initially
-- Deployment ready: All code should be clean, documented, and testable
-</tech_stack>
+## III. Current State of API Integration & Logic
 
-<directory_expectations>
-All code you generate must go under:
+-   **Integrated & Handled APIs (in `bip_api_registry.py` and `assistant_routes.py` logic):**
+    1.  `/nova-api/academic-feedbacks`
+    2.  `/nova-api/students`
+    3.  `/nova-api/departments` (with caching)
+    4.  `/nova-api/student-activity-masters`
+    5.  `/nova-api/student-achievement-loggers` (with rule-based override for "my achievements")
+    6.  `/nova-api/academic-course-faculty-mappings` (with iterative logic for "Faculties teaching me")
+    7.  `/nova-api/periodical-statuses`
+-   **Data Parsing**: `parse_nova_api_response_data` in `assistant_routes.py` is the primary parser, assuming a common Nova resource structure.
+-   **Query Parameterization**: Logic exists to use `search` and `filters` parameters based on `query_details` from `extract_query_type_and_value`. Default filters are applied for some endpoints.
+-   **User Context**: `get_student_details_from_session` fetches student's department and semester for contextual queries.
 
-`packages/mcp_server/`
+## IV. Strategic Plan for Expanding API Endpoint Integration
 
-Structure it like this:
-- `main.py`: FastAPI app bootstrap
-- `routers/`: All API route definitions
-- `services/`: Core logic like context resolution and prompt handling
-- `auth/`: Google OAuth token validation logic
-- `tests/`: Unit tests (especially for services)
+This section outlines the strategy for integrating the comprehensive list of additional BIP Nova API endpoints.
 
-Do not write code in `apps/api/` or `apps/web/`.
-</directory_expectations>
+### A. Centralized API Registry (`core/bip_api_registry.py`)
+-   **Action**: For each new API endpoint integrated, a new entry will be added to `BIP_API_ENDPOINTS`.
+    -   **`path`**: The exact API path.
+    -   **`description`**: A clear, concise description detailing the API's purpose, the type of data it provides, and example use cases or question types it can answer. This is **critical** for the Path Selection LLM. Keywords relevant to user queries should be included.
+    -   **`data_schema_hint`**: An optional but highly recommended string summarizing the key fields available in the (parsed) response. This aids both path selection and answer generation LLMs.
+-   **Design Consideration (Future)**: If the list of APIs becomes excessively long (e.g., 50+), consider:
+    -   Categorizing endpoints within the registry (e.g., "Academics", "People", "Projects").
+    -   A multi-stage path selection process (LLM first selects a category, then an API within that category).
+    -   Using embeddings for semantic search over API descriptions if direct LLM prompting becomes inefficient.
+    -   *Current approach*: For the current list size (~30-40 endpoints), direct listing in the prompt for `determine_api_path_from_query` is expected to be feasible.
 
-<expected_endpoints>
-1. `GET /api/contextual?student_id=...`
-   - Fetches contextual academic/user data for that student (mock data only)
+### B. Path Selection LLM (`core/llm_service.py -> determine_api_path_from_query`)
+-   **Prompt Engineering**: The system prompt for this LLM will be dynamically updated to include all registered APIs and their descriptions.
+    -   The prompt emphasizes selecting the *single best path* or "NO_PATH_FOUND".
+    -   It includes instructions to prioritize "my" queries for user-centric data endpoints.
+-   **Scalability**: Monitor performance and context window limits as more APIs are added.
+-   **Disambiguation**: Rely on high-quality, distinct API descriptions to minimize ambiguity.
 
-2. `POST /api/prompt`
-   - Accepts a prompt and optional context payload
-   - Returns a completed AI response (can be stubbed initially)
+### C. Data Parsing (`routes/assistant_routes.py -> parse_nova_api_response_data` & Potential New Parsers)
+-   **Action**: For each new API:
+    1.  Obtain a sample JSON response.
+    2.  **Verify Structure**: Determine if it follows the standard Nova resource structure handled by `parse_nova_api_response_data` (top-level `resources` list, items with `id` and `fields` or `attributes`).
+    3.  **Adapt/Extend**:
+        -   If similar: `parse_nova_api_response_data` might be reusable. Ensure it correctly extracts primary `id` and relevant data from `fields` or `attributes`.
+        -   If different:
+            -   Option A (Preferred for distinct structures): Create a new, specific parser function (e.g., `parse_periodical_status_data`).
+            -   Option B (If variations are minor): Enhance `parse_nova_api_response_data` to be more adaptable, possibly by accepting hints.
+-   **Strategy (Parsing Dispatch)**: Implement or refine a dispatcher mechanism (e.g., a dictionary mapping API paths to parser functions) in `assistant_routes.py` or a dedicated `parsing_service.py`.
+    ```python
+    # Example:
+    # API_PARSERS = { "/nova-api/students": parse_nova_api_response_data, ... }
+    # parser = API_PARSERS.get(selected_path, default_parser_or_error_handler)
+    # parsed_data = await parser(raw_response)
+    ```
+    The current `parse_nova_api_response_data` in `assistant_routes.py` is generally robust for Nova's typical "list of resources" structure where each resource has an `id` (either as a direct value or a dict `{"value": ...}`) and data within a `fields` array or an `attributes` object. It also handles cases where a single resource might be returned directly under a `data` key (e.g., when fetching a student by ID).
 
-All endpoints require valid `Authorization: Bearer <token>` headers.
-</expected_endpoints>
+### D. Answering LLM (`core/llm_service.py -> get_answer_from_llm`)
+-   **Prompting**:
+    -   The general answering prompt is designed to be somewhat adaptable.
+    -   Specific prompt variations exist for `list_by_department_query` and `specific_entity_details`.
+    -   **Action**: As new data types are introduced, review if the generic prompt is sufficient or if new conditional prompt variations are needed for optimal summarization/answering for that data type.
+    -   Consider passing the `data_schema_hint` from the API registry to the Answering LLM to give it more context about the structure of the `context_data` it's receiving.
+-   **Data Quality**: The quality of parsed data is paramount.
 
-<key_guidelines>
-- Token verification must be done using Google’s public keys (JWKS)
-- Student context is mocked using a local JSON file or Python dictionary
-- The `prompt` endpoint simulates LLM completions—use placeholder logic or simple rules
-- Code must include proper documentation, type hints, and error handling
-- Every function must be testable; write unit tests for service logic
-</key_guidelines>
+### E. User Context (Student Details)
+-   **Strategy**: Continue to use `get_student_details_from_session` to fetch the logged-in student's department ID, department name, and current semester.
+-   **Application**:
+    1.  **Path Selection**: This context can be appended to the user's query for `determine_api_path_from_query` to improve accuracy for context-sensitive questions. (Not yet implemented, but a planned enhancement).
+    2.  **Data Filtering**: Used in `handle_faculty_for_my_courses_query` to filter course mappings client-side after a broader fetch.
+    3.  **Response Personalization**: The Answering LLM can use this context if provided.
+-   **Action**: Ensure `get_student_details_from_session` correctly parses the student record structure from `/nova-api/students/{id}` or `/nova-api/students?search=...`. (Recent fixes addressed this).
 
-<responsibilities_of_cline_ai>
-You are responsible for:
-- Writing the server in full, step by step, one logical block at a time
-- Keeping the project memory **accurate and updated**
-- If the user ever changes the project structure, tech stack, or functionality:
-  → You must **update this memory_bank prompt** to reflect those changes
+### F. Modular Design
+-   Maintain separation of concerns:
+    -   `bip_api_registry.py`: API definitions.
+    -   `bip_service.py`: Raw BIP API interaction, session, caching.
+    -   `llm_service.py`: All direct LLM calls and core prompt logic.
+    -   `assistant_routes.py`: Orchestration, request/response handling, path-specific parameter logic, calling services.
+    -   Potential `parsing_service.py` if parsing logic becomes very complex.
 
-This memory_bank must stay **fully in sync** with the actual project reality at all times.
+### G. Immediate Focus for Integrating Next API
+1.  **Select Next API** from the provided list.
+2.  **Add to `BIP_API_ENDPOINTS`**: Define `path`, `description`, and `data_schema_hint`.
+3.  **Test Path Selection**: Formulate sample user queries and verify `determine_api_path_from_query` selects the new path. Refine description if needed.
+4.  **Obtain Sample JSON Response** for the new API.
+5.  **Implement/Verify Parser**:
+    -   Check if `parse_nova_api_response_data` works.
+    -   If not, implement a new parser or adapt the existing one. Update parsing dispatcher if using one.
+6.  **Update `assistant_routes.py`**:
+    -   Add the path to the list of general `perPage=150` fetch paths.
+    -   Add logic to apply default filters if necessary (like the `created_at` or periodical status filters).
+    -   Determine if any specific `query_details` (from `extract_query_type_and_value`) can be used to populate `search` or specific `filters` for this new API. Implement this parameterization.
+7.  **Test Full Flow**: User query -> Path Selection -> Parameterization -> Data Fetch -> Data Parse -> LLM Answer.
+8.  **Refine Answering LLM Prompt**: If needed for the new data type.
 
-Whenever a new file, route, service, or spec is added, be proactive and modify this memory accordingly.
+## V. List of BIP Nova API Endpoints for Future Integration (from User)
 
-When unsure, ask clarifying questions or review existing code.
-</responsibilities_of_cline_ai>
+**Academics:**
+-   `/nova-api/academic-course-faculty-mappings` (Integrated)
+-   `/nova-api/academic-feedbacks` (Integrated)
+-   `/nova-api/periodical-statuses` (Integrated)
 
-<future_expansion_note>
-Once the MVP is complete with stubbed context and prompt logic, the user intends to:
-- Integrate real BIP portal data securely via authorized APIs
-- Replace stubbed AI responses with real LLM completions (e.g., OpenAI API)
-- Possibly add Redis/Mongo for context caching and persistence
-</future_expansion_note>
+**Master Entries (Reference Data):**
+-   `/nova-api/academic-years`
+-   `/nova-api/departments` (Integrated)
+-   `/nova-api/designations`
+-   `/nova-api/student-statuses`
+-   `/nova-api/faculty-statuses`
 
-<summary>
-Your job is to help build an intelligent, extensible backend AI-assistant server with secure access, clear logic, and adaptable design. This memory_bank is your source of truth. Maintain it diligently and update it as the project evolves.
-</summary>
+**Mentors:**
+-   `/nova-api/mentors`
 
-<bip_extension_overview>
-The `bip-extension` is a Chrome browser extension designed to capture session information from the Bannari Amman Institute of Technology's BIP portal (`https://bip.bitsathy.ac.in/`) and send it to the MCP server.
+**People:**
+-   `/nova-api/students` (Integrated)
+-   `/nova-api/faculties`
 
-**Purpose:**
-- To provide the MCP server with the necessary session context (cookies) from the BIP portal. This allows the MCP server to potentially make authenticated requests to the BIP portal on behalf of the user or use session details to personalize responses.
+**Projects:**
+-   `/nova-api/student-project-details`
+-   `/nova-api/student-project-registrations`
+-   `/nova-api/student-project-implementation-details`
 
-**Key Files & Responsibilities:**
-- `manifest.json`:
-    - Defines the extension's permissions (cookies, storage, activeTab, declarativeNetRequest), host permissions for `https://bip.bitsathy.ac.in/*`.
-    - Registers the background service worker (`background.js`).
-    - Defines the browser action popup (`popup.html`).
-    - Registers a content script (`content_script.js`) to run on BIP portal pages.
-- `background.js`:
-    - Listens for tab updates on the BIP portal.
-    - When a BIP portal tab is fully loaded, it attempts to retrieve `bip_session`, `XSRF-TOKEN`, `wiki_wiki_UserName`, and `wiki_wiki_UserID` cookies.
-    - Sends these cookies in a JSON payload to the MCP server endpoint: `http://localhost:8000/bip/session/bip` via a POST request.
-    - Updates the extension badge to 'OK' on success or 'ERR' on failure.
-    - Includes logic for a manual trigger via `chrome.action.onClicked` and a potential message listener for `MANUAL_SYNC_REQUEST` from the popup.
-- `content_script.js`:
-    - Currently logs a message to the console.
-    - Contains commented-out example code for accessing `sessionStorage` (e.g., for `XSRF-TOKEN`) and sending it to `background.js` via `chrome.runtime.sendMessage`. This is not actively used.
-- `popup.html`:
-    - Provides a simple UI with a status message and a "Manual Sync" button.
-- `popup.js`:
-    - Handles the "Manual Sync" button click.
-    - Attempts to send a `MANUAL_SYNC_REQUEST` message to `background.js` to trigger the cookie fetching and sending process.
-    - Displays basic status updates in the popup.
+**SSIG (Student Special Interest Groups):**
+-   `/nova-api/ssigs`
 
-**Interaction with MCP Server:**
-- The extension sends a POST request to `http://localhost:8000/bip/session/bip` (defined in `background.js` as `MCP_SERVER_ENDPOINT`).
-- The request body is a JSON object containing the extracted cookies:
-  ```json
-  {
-    "bip_session_cookie": "...",
-    "xsrf_token_cookie": "...",
-    "wiki_user_name_cookie": "...",
-    "wiki_user_id_cookie": "..."
-  }
-  ```
-- The MCP server is expected to have an endpoint at `/bip/session/bip` to receive this data. This endpoint is implemented in `packages/mcp_server/routes/bip_routes.py` and uses the `BipSessionData` model from `packages/mcp_server/models/bip_models.py`.
-</bip_extension_overview>
+**Special Labs:**
+-   `/nova-api/special-labs`
+-   `/nova-api/special-labs-details`
+
+**Student Achievements (Broader Category):**
+-   `/nova-api/student-activity-masters` (Integrated - General event master list)
+-   `/nova-api/student-achievement-loggers` (Integrated - Student's logged participations)
+-   `/nova-api/student-paper-presentation-reports`
+-   `/nova-api/student-project-presentation-reports`
+-   `/nova-api/student-project-outcomes`
+-   `/nova-api/student-technical-competition-reports`
+-   `/nova-api/mba-student-technical-competitions`
+-   `/nova-api/student-patent-trackers`
+-   `/nova-api/student-patent-reports`
+-   `/nova-api/industries` (Likely related to internships/placements)
+-   `/nova-api/student-internships`
+-   `/nova-api/internships-trackers`
+-   `/nova-api/internships-reports`
+
+**Student Action Plans:**
+-   `/nova-api/student-action-plan-internships`
+-   `/nova-api/student-action-plan-online-courses`
+-   `/nova-api/student-action-plan-paper-presentations`
+-   `/nova-api/student-action-plan-patents`
+-   `/nova-api/student-action-plan-products`
+-   `/nova-api/student-action-plan-project-presentations`
+-   `/nova-api/student-action-plan-competitions`
+
+**Student Declarations:**
+-   `/nova-api/student-declarations`
+
+**Technical Approval Committee (TAC):**
+-   `/nova-api/student-tacs`
+-   `/nova-api/student-tac-review-appoinments`
+-   `/nova-api/tac-internship-projects`
+
+**Users:**
+-   `/nova-api/users` (General user information, potentially including roles)
+
+## VI. Current Known Issues / Areas for Immediate Refinement (Paused)
+-   The iterative reasoning for "Faculties teaching me" is implemented but relies on accurate student detail parsing and potentially complex filter construction for `/nova-api/academic-course-faculty-mappings`. The Python-side filtering is a fallback.
+-   Effectiveness of the `search` parameter versus structured `filters` for some endpoints (e.g., `/nova-api/student-activity-masters`) needs ongoing evaluation.
+-   Robustness of `extract_query_type_and_value` for diverse phrasings and typos, especially for non-entity-specific keyword extraction.
+
+This memory bank update reflects the new strategic direction and the comprehensive list of APIs.
