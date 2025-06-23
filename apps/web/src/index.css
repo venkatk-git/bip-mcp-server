@@ -1,48 +1,5 @@
 @import "tailwindcss"; /* This should bring in Tailwind's base, components, and utilities */
 
 @theme {
-  --color-accent-brand: hsl(15 63.1% 59.6%);
-
-  --color-accent-main-000: hsl(15 55.6% 52.4%);
-  --color-accent-main-100: hsl(15 63.1% 59.6%);
-  --color-accent-main-200: hsl(15 63.1% 59.6%);
-  --color-accent-main-900: hsl(0 0% 0%);
-
-  --color-accent-pro-000: hsl(251 84.6% 74.5%);
-  --color-accent-pro-100: hsl(251 40.2% 54.1%);
-  --color-accent-pro-200: hsl(251 40% 45.1%);
-  --color-accent-pro-900: hsl(250 25.3% 19.4%);
-
-  --color-accent-secondary-000: hsl(210 71.1% 62%);
-  --color-accent-secondary-100: hsl(210 70.9% 51.6%);
-  --color-accent-secondary-200: hsl(210 70.9% 51.6%);
-  --color-accent-secondary-900: hsl(210 55.9% 24.6%);
-
-  --color-bg-000: hsl(60 2.1% 18.4%);
-  --color-bg-100: hsl(60 2.7% 14.5%);
-  --color-bg-200: hsl(30 3.3% 11.8%);
-  --color-bg-300: hsl(60 2.6% 7.6%);
-  --color-bg-400: hsl(60 3.4% 5.7%);
-  --color-bg-500: hsl(60 3.4% 5.7%);
-
-  --color-border-100: hsl(51 16.5% 84.5%);
-  --color-border-200: hsl(51 16.5% 84.5%);
-  --color-border-300: hsl(51 16.5% 84.5%);
-  --color-border-400: hsl(51 16.5% 84.5%);
-
-  --color-danger-000: hsl(0 73.1% 66.5%);
-  --color-danger-100: hsl(0 58.6% 34.1%);
-  --color-danger-200: hsl(0 58.6% 34.1%);
-  --color-danger-900: hsl(0 23% 15.6%);
-
-  --color-oncolor-100: hsl(0 0% 100%);
-  --color-oncolor-200: hsl(60 6.7% 97.1%);
-  --color-oncolor-300: hsl(60 6.7% 97.1%);
-
-  --color-text-000: hsl(48 33.3% 97.1%);
-  --color-text-100: hsl(48 33.3% 97.1%);
-  --color-text-200: hsl(50 9% 73.7%);
-  --color-text-300: hsl(50 9% 73.7%);
-  --color-text-400: hsl(48 4.8% 59.2%);
-  --color-text-500: hsl(48, 4.8%, 59.2%);
+  --color-bgcol-000: rgb(16, 16, 16);
 }
