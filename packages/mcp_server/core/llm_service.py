@@ -20,6 +20,9 @@ try:
     
     if api_key_to_configure and "YOUR_GOOGLE_API_KEY" not in api_key_to_configure:
         genai.configure(api_key=api_key_to_configure)
+        for m in genai.list_models():
+            if "generateContent" in m.supported_generation_methods:
+                print(m.name)
     # else: # Warning about not configured was here
         pass
 
@@ -31,7 +34,7 @@ async def get_answer_from_llm(
     context_data: Any, 
     user_question: str, 
     query_details: Optional[Dict[str, Any]] = None, # New parameter
-    model_name: str = "gemini-1.5-flash-latest"
+    model_name: str = "gemini-2.0-flash-lite"
 ) -> str:
     """
     Gets an answer from a Google Gemini model based on provided context data and a user question.
@@ -95,9 +98,9 @@ async def get_answer_from_llm(
         
         # Note: MAX_CONTEXT_CHAR_LENGTH is now effectively TARGET_CHUNK_CHAR_LENGTH due to pre-chunking
         
-        # Determine if the original question implies listing students from a department
-        # This is a heuristic; a more robust way would be to pass intent from extract_query_type_and_value
+        # Determine query type for specialized prompts
         is_list_by_department_query = "list" in user_question.lower() and "student" in user_question.lower() and ("department" in user_question.lower() or "dept" in user_question.lower())
+        is_periodical_status_query = any(keyword in user_question.lower() for keyword in ["pt1", "pt2", "exam", "assessment", "periodical", "status", "test"])
         
         # Construct a more targeted prompt if it's a list-by-department query
         if is_list_by_department_query:
@@ -115,6 +118,20 @@ async def get_answer_from_llm(
                 "Each name on a new line, please! If this chunk is a dud (no matches), just say: NO_MATCHING_STUDENTS_IN_CHUNK",
                 "\nProvided data CHUNK:\n",
                 context_str_chunk
+            ]
+        elif is_periodical_status_query:
+            prompt_parts = [
+                "You are a helpful AI assistant for BIP. The user is asking about exam/assessment status.",
+                "Based on the periodical status data provided, give a clear summary of the current status.",
+                "Format your response as:",
+                "• For each relevant periodical (PT1, PT2, Model Exam, Semester Exam), show its status and affected semesters",
+                "• Use simple language like 'PT1 is currently Inactive for all semesters' or 'Semester Exams are Active for semesters 3, 5, 7'",
+                "• Don't mention authorization details unless specifically asked",
+                "• If no data matches the query, say 'No information available for the requested assessment'",
+                "\nProvided periodical status data:\n",
+                context_str_chunk,
+                "\nUser's question:\n",
+                user_question
             ]
         elif query_details and query_details.get("type") == "multi_entity_comparison":
             entities_info = query_details.get("entities", []) # This is a list of dicts
@@ -156,9 +173,7 @@ async def get_answer_from_llm(
                 user_question
             ]
         
-        print(f"--- Debug LLM Answering: Sending request to Gemini for chunk {i+1}/{len(data_chunks)}. Model: {model_name}.")
-        # For very verbose debugging, you could print the full prompt_parts, but be wary of log size.
-        # print(f"--- Debug LLM Answering: Prompt for chunk {i+1}: {prompt_parts}")
+        # Processing chunk {i+1} of {len(data_chunks)} with {model_name}
 
 
         try:
@@ -180,19 +195,14 @@ async def get_answer_from_llm(
             else:
                 all_llm_answers.append(chunk_answer)
             
-            # Early exit for specific_entity_details if a satisfactory answer is found in a chunk
+            # Early exit for specific entity queries if answer found
             if query_details and query_details.get("type") == "specific_entity_details":
-                # Heuristic: if the answer is not a generic "not found" and seems substantial.
-                # A more robust check might involve another LLM call to verify if chunk_answer answers user_question.
                 if chunk_answer and \
                    "not found" not in chunk_answer.lower() and \
                    "not available" not in chunk_answer.lower() and \
                    "no_matching" not in chunk_answer.upper() and \
-                   len(chunk_answer) > 20: # Arbitrary length to suggest a real answer
-                    # We take this chunk's answer as the final one for this specific query type.
-                    # Need to clear other collected answers if any, or just use this one.
-                    # For simplicity, let's assume this is THE answer.
-                    return chunk_answer # Exit early
+                   len(chunk_answer) > 20:
+                    return chunk_answer
 
             if len(data_chunks) > 1 and i < len(data_chunks) - 1: # Add delay if there are more chunks
                 await asyncio.sleep(4)
@@ -217,7 +227,7 @@ async def get_answer_from_llm(
             answers_with_content.append(ans_from_chunk.strip())
 
     if not answers_with_content:
-        return "No relevant information found in the data to answer your question."
+        return "I couldn't find any relevant information to answer your question. Please try rephrasing or being more specific."
 
     # Determine if this is a simple list aggregation query (e.g., list students by dept)
     # This relies on the query_details passed into this function.
@@ -229,7 +239,7 @@ async def get_answer_from_llm(
     # Add other query types that should be simple list aggregations here if needed.
 
     if len(answers_with_content) > 1 and not is_simple_list_aggregation:
-        print(f"--- Synthesizing final answer from {len(answers_with_content)} chunks for question: '{user_question}' ---")
+        # Synthesizing answer from multiple chunks
         combined_text_for_synthesis = "\n\n==== NEXT PIECE OF INFORMATION ====\n\n".join(answers_with_content)
         
         synthesis_prompt_parts = [
@@ -252,15 +262,12 @@ async def get_answer_from_llm(
             synthesis_response = await model.generate_content_async(synthesis_prompt_parts)
             if synthesis_response.candidates and synthesis_response.candidates[0].content.parts:
                 final_answer = "".join([part.text for part in synthesis_response.candidates[0].content.parts if hasattr(part, 'text')]).strip()
-                if not final_answer.strip(): # If LLM returns empty string
-                    print("Warning: Synthesis LLM call returned empty content. Falling back to joining chunk answers.")
-                    final_answer = "\n\n".join(answers_with_content) # Fallback
+                if not final_answer.strip():
+                    final_answer = "\n\n".join(answers_with_content)
             else:
-                print("Warning: Synthesis LLM call failed or returned no candidates/parts. Falling back to joining chunk answers.")
-                final_answer = "\n\n".join(answers_with_content) # Fallback
+                final_answer = "\n\n".join(answers_with_content)
         except Exception as e_synth:
-            print(f"Error during synthesis LLM call: {e_synth}. Falling back to joining chunk answers.")
-            final_answer = "\n\n".join(answers_with_content) # Fallback
+            final_answer = "\n\n".join(answers_with_content)
     
     elif is_simple_list_aggregation:
         # For simple list aggregation (e.g., student names by department)
@@ -282,19 +289,19 @@ async def get_answer_from_llm(
     return final_answer.strip() if final_answer.strip() else "No answer could be formulated based on the provided data."
 
 
-async def determine_api_path_from_query(user_question: str, available_apis: List[Dict[str, str]], model_name: str = "gemini-1.5-flash-latest") -> str | None:
+async def determine_api_path_from_query(user_question: str, available_apis: List[Dict[str, str]], model_name: str = "gemini-2.0-flash-lite") -> str | None:
     """
     Determines the most appropriate API path to call based on the user's question and a list of available APIs.
     Returns the API path string or None if no suitable path is found or an error occurs.
     """
+    # Determining API path for user question
+    
     if not settings.GOOGLE_API_KEY or "YOUR_GOOGLE_API_KEY" in settings.GOOGLE_API_KEY:
         env_api_key = os.getenv("GOOGLE_API_KEY")
         if not env_api_key or "YOUR_GOOGLE_API_KEY" in env_api_key:
             return None
 
-    if not user_question:
-        return None
-    if not available_apis:
+    if not user_question or not available_apis:
         return None
 
     try:

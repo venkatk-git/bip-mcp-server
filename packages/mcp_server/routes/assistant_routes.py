@@ -12,8 +12,146 @@ import urllib.parse
 import base64 
 import json
 import asyncio # For gather
+import re
 
 router = APIRouter()
+
+async def smart_name_search(request: Request, api_path: str, search_name: str, query_details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Universal smart name search handler for any API endpoint.
+    Handles name variations, partial matches, and fuzzy searching.
+    
+    Args:
+        request: FastAPI request object
+        api_path: The API endpoint to search (e.g., "/nova-api/students")
+        search_name: The name to search for
+        query_details: Optional query details for LLM processing
+    
+    Returns:
+        Dict with 'success', 'data', 'message', and 'data_source' keys
+    """
+    print(f"Smart name search: Looking for '{search_name}' in {api_path}")
+    
+    # Step 1: Try exact name search
+    exact_search_path = f"{api_path}?search={urllib.parse.quote(search_name)}"
+    try:
+        response = await fetch_bip_data(request, exact_search_path, fetch_all_pages=False)
+        if response:
+            data = parse_nova_api_response_data(response, resource_name_hint=exact_search_path)
+            if data:
+                print(f"Exact search found {len(data)} results")
+                return {
+                    "success": True,
+                    "data": data,
+                    "message": f"Found exact match for '{search_name}'",
+                    "data_source": exact_search_path
+                }
+    except Exception as e:
+        print(f"Exact search failed: {e}")
+    
+    # Step 2: Try partial name searches
+    names = search_name.split()
+    if len(names) >= 2:
+        print(f"Trying partial name searches for '{search_name}'")
+        
+        # Try each part of the name
+        for name_part in names:
+            if len(name_part) >= 3:  # Only meaningful names
+                partial_path = f"{api_path}?search={urllib.parse.quote(name_part)}"
+                try:
+                    print(f"Trying partial search: {partial_path}")
+                    response = await fetch_bip_data(request, partial_path, fetch_all_pages=False)
+                    if response:
+                        data = parse_nova_api_response_data(response, resource_name_hint=partial_path)
+                        if data:
+                            # Filter results that contain multiple parts of the original name
+                            filtered_results = []
+                            for item in data:
+                                item_name = item.get('name', '').lower()
+                                # Check if item contains multiple parts of the search name
+                                matches = sum(1 for name in names if name.lower() in item_name)
+                                if matches >= min(2, len(names)):  # At least 2 parts or all parts if < 2
+                                    filtered_results.append(item)
+                            
+                            if filtered_results:
+                                print(f"Partial search found {len(filtered_results)} matching results")
+                                return {
+                                    "success": True,
+                                    "data": filtered_results,
+                                    "message": f"Found similar names for '{search_name}'",
+                                    "data_source": f"{exact_search_path} (fallback: {partial_path})"
+                                }
+                except Exception as e:
+                    print(f"Partial search failed for '{name_part}': {e}")
+                    continue
+    
+    # Step 3: No results found
+    return {
+        "success": False,
+        "data": [],
+        "message": f"No records found for '{search_name}'. Please check spelling or try a different name format.",
+        "data_source": exact_search_path
+    }
+
+def extract_entity_from_common_patterns(user_question: str, api_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Generic function to extract entity names from common question patterns.
+    Works across all API endpoints by detecting patterns like:
+    - "Who is [NAME]"
+    - "Tell me about [NAME]" 
+    - "Details of [NAME]"
+    - "What is the [FIELD] of [NAME]"
+    - "[NAME] information"
+    """
+    question_lower = user_question.lower()
+    
+    # Define common patterns that indicate a specific entity query
+    patterns = [
+        # Direct patterns
+        r"who is\s+(.+?)(?:\?|$)",
+        r"tell me about\s+(.+?)(?:\?|$)",
+        r"details of\s+(.+?)(?:\?|$)",
+        r"information about\s+(.+?)(?:\?|$)",
+        r"show me\s+(.+?)(?:\?|$)",
+        
+        # Field-specific patterns
+        r"what is the .+? of\s+(.+?)(?:\?|$)",
+        r"(?:faculty|employee|student)?\s*id of\s+(.+?)(?:\?|$)",
+        r"(?:roll|enrollment)\s*number of\s+(.+?)(?:\?|$)",
+        r"department of\s+(.+?)(?:\?|$)",
+        r"email of\s+(.+?)(?:\?|$)",
+        
+        # Event/activity patterns
+        r"event\s+(.+?)(?:\?|$)",
+        r"activity\s+(.+?)(?:\?|$)",
+        r"competition\s+(.+?)(?:\?|$)",
+        r"hackathon\s+(.+?)(?:\?|$)",
+    ]
+    
+    # Try each pattern
+    for pattern in patterns:
+        match = re.search(pattern, question_lower)
+        if match:
+            entity_name = match.group(1).strip()
+            # Clean up the extracted name
+            entity_name = entity_name.rstrip('?.,!').strip()
+            
+            # Skip if it's too short or looks like a generic term
+            if len(entity_name) > 1 and not entity_name in ['it', 'that', 'this', 'them', 'him', 'her']:
+                # Clean up common suffixes that might indicate context rather than part of the name
+                # Handle patterns like "John Doe from AIML" -> extract just "John Doe"
+                for suffix_pattern in [r'\s+from\s+\w+$', r'\s+in\s+\w+$', r'\s+at\s+\w+$', r'\s+department$']:
+                    entity_name = re.sub(suffix_pattern, '', entity_name, flags=re.IGNORECASE)
+                
+                # Restore original capitalization from the original question
+                original_start = user_question.lower().find(entity_name.lower())
+                if original_start != -1:
+                    entity_name = user_question[original_start:original_start + len(entity_name)]
+                
+                print(f"Generic fallback: Extracted '{entity_name}' from pattern '{pattern}' for API {api_path}")
+                return {"type": "specific_entity_details", "value": entity_name}
+    
+    return None
 
 class AskBipDataRequest(BaseModel):
     user_question: str
@@ -331,17 +469,27 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
         if not query_details_for_llm: 
             query_details_for_llm = await extract_query_type_and_value(user_question)
         print(f"Query details for parameterization: {query_details_for_llm}")
+        
+        # Generic fallback: extract entity names from common question patterns
+        if not query_details_for_llm and base_effective_path:
+            query_details_for_llm = extract_entity_from_common_patterns(user_question, base_effective_path)
 
-
-        if base_effective_path == "/nova-api/students":
+        # Handle people-based APIs with smart name search
+        if base_effective_path in ["/nova-api/students", "/nova-api/faculties"]:
             if query_details_for_llm: 
                 q_type = query_details_for_llm.get("type") 
                 q_value = query_details_for_llm.get("value")
                 if q_type == "specific_entity_details" and q_value: 
-                    api_params["search"] = q_value
-                    should_fetch_all_pages = False 
-                    print(f"Using search term for student: {q_value}. Fetching single page.")
-                elif q_type == "list_by_category" and query_details_for_llm.get("category_type") == "department_name" and q_value:
+                    # Use smart name search instead of simple search parameter
+                    search_result = await smart_name_search(request, base_effective_path, q_value, query_details_for_llm)
+                    if search_result["success"]:
+                        context_for_llm = search_result["data"]
+                        llm_answer = await get_answer_from_llm(context_for_llm, user_question, query_details_for_llm)
+                        return {"answer": llm_answer, "data_source": search_result["data_source"]}
+                    else:
+                        return {"answer": search_result["message"], "data_source": search_result["data_source"]}
+                elif base_effective_path == "/nova-api/students" and q_type == "list_by_category" and query_details_for_llm.get("category_type") == "department_name" and q_value:
+                    # Keep existing department filtering logic for students
                     department_id = await get_department_id_by_name(request, q_value)
                     if department_id:
                         print(f"Found department ID: {department_id} for name: {q_value}")
@@ -355,8 +503,11 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
                         print(f"Could not find ID for department: {q_value}. Fetching with perPage=150 for broader student results.")
                         api_params["perPage"] = "150"; should_fetch_all_pages = True
                 else: 
-                    print("General student query or unhandled specific student query. Fetching with perPage=150 and all pages.")
+                    print(f"General {base_effective_path} query. Fetching with perPage=150 and all pages.")
                     api_params["perPage"] = "150"; should_fetch_all_pages = True
+            else:
+                print(f"No query details for {base_effective_path}. Fetching with perPage=150 and all pages.")
+                api_params["perPage"] = "150"; should_fetch_all_pages = True
         
         elif base_effective_path == "/nova-api/student-activity-masters":
             if query_details_for_llm and query_details_for_llm.get("type") == "specific_entity_details" and query_details_for_llm.get("value"):
@@ -378,7 +529,24 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
                 api_params["perPage"] = "150"; should_fetch_all_pages = True
                 print(f"Fetching all pages for {base_effective_path} (student activities) with perPage=150.")
 
-        elif base_effective_path in ["/nova-api/academic-feedbacks", "/nova-api/departments", "/nova-api/student-achievement-loggers", "/nova-api/academic-course-faculty-mappings", "/nova-api/periodical-statuses"]:
+        elif base_effective_path in ["/nova-api/faculties"]:
+            # Generic handling for people/entity APIs
+            if query_details_for_llm:
+                q_type = query_details_for_llm.get("type")
+                q_value = query_details_for_llm.get("value")
+                if q_type == "specific_entity_details" and q_value:
+                    api_params["search"] = q_value
+                    should_fetch_all_pages = False
+                    entity_type = base_effective_path.split("/")[-1].rstrip('s')  # "faculties" -> "faculty"
+                    print(f"Using search term for {entity_type}: {q_value}. Fetching single page.")
+                else:
+                    print(f"General {base_effective_path} query. Fetching with perPage=150 and all pages.")
+                    api_params["perPage"] = "150"; should_fetch_all_pages = True
+            else:
+                print(f"No query details for {base_effective_path}. Fetching with perPage=150 and all pages.")
+                api_params["perPage"] = "150"; should_fetch_all_pages = True
+
+        elif base_effective_path in ["/nova-api/academic-feedbacks", "/nova-api/departments", "/nova-api/student-achievement-loggers", "/nova-api/academic-course-faculty-mappings", "/nova-api/periodical-statuses", "/nova-api/student-project-implementation-details", "/nova-api/student-paper-presentation-reports", "/nova-api/student-project-competition-reports", "/nova-api/student-technical-competition-reports", "/nova-api/internship-reports", "/nova-api/student-online-courses"]:
             if query_details_for_llm and query_details_for_llm.get("type") == "general_listing" and query_details_for_llm.get("value"):
                 api_params["search"] = query_details_for_llm.get("value")
                 print(f"General search for {base_effective_path} with keywords '{query_details_for_llm.get('value')}'")
@@ -388,7 +556,13 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
             default_filters_map = {
                 "/nova-api/student-achievement-loggers": [{"DateTime:created_at":[None,None]}],
                 "/nova-api/academic-course-faculty-mappings": [{"DateTime:created_at":[None,None]}],
-                "/nova-api/periodical-statuses": [{"Select:periodical":""},{"Select:semester":""},{"Select:status":""}] 
+                "/nova-api/periodical-statuses": [{"Select:periodical":""},{"Select:semester":""},{"Select:status":""}],
+                "/nova-api/student-project-implementation-details": [{"resource:student-project-details:student_project_details":""},{"resource:academic-years:academic_years":""},{"Select:semester":""},{"Select:week":""},{"Textarea:work_carried_out":""},{"Select:project_guide_verification":""},{"Date:verified_date":[None,None]},{"Select:guide_comments":""},{"DateTime:created_at":[None,None]}],
+                "/nova-api/student-paper-presentation-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:paper_title":""},{"Date:start_date":[None,None]},{"Date:end_date":[None,None]},{"Select:status":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                "/nova-api/student-project-competition-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:project_title":""},{"Date:from_date":[None,None]},{"Date:to_date":[None,None]},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                "/nova-api/student-technical-competition-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:event_title":""},{"Select:participated_as":""},{"Date:from_date":[None,None]},{"Date:to_date":[None,None]},{"Select:sponsorship_types":""},{"Select:status":""},{"Text:winning_proof_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                "/nova-api/internship-reports": [{"resource:internship-trackers:internship_trackers":""},{"Enum:year_of_study":""},{"resource:ssigs:ssigs":""},{"resource:special-labs:special_labs":""},{"Select:sector":""},{"Text:address_line_1":""},{"Text:address_line_2":""},{"Text:city":""},{"Text:state":""},{"Text:postal_code":""},{"Text:country":""},{"Text:industry_website":""},{"Text:industry_contact_details":""},{"Select:referred_by":""},{"Enum:stipend_amount":""},{"Select:is_aicte":""},{"Text:full_document_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                "/nova-api/student-online-courses": [{"resource:students:students":""},{"Enum:year_of_study":""},{"resource:special-labs:special_labs":""},{"resource:online-courses:online_course":""},{"Select:course_type":""},{"Select:project_outcome":""},{"Text:other_course_name":""},{"Select:marks_available":""},{"Enum:course_exemption":""},{"Date:course_start_date":[None,None]},{"Date:course_end_date":[None,None]},{"Date:exam_date":[None,None]},{"Text:other_sponsorship_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}]
             }
             if base_effective_path in default_filters_map and "filters" not in api_params: 
                 default_filters = default_filters_map[base_effective_path]
@@ -398,11 +572,28 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
                 
             print(f"Fetching all pages for {base_effective_path} with perPage=150.")
         else: 
-            should_fetch_all_pages = False
-            print(f"Defaulting to single page fetch for {base_effective_path}")
+            # Generic fallback for any other API endpoint
+            if query_details_for_llm:
+                q_type = query_details_for_llm.get("type")
+                q_value = query_details_for_llm.get("value")
+                if q_type == "specific_entity_details" and q_value:
+                    api_params["search"] = q_value
+                    should_fetch_all_pages = False
+                    print(f"Using search term for {base_effective_path}: {q_value}. Fetching single page.")
+                elif q_type == "general_listing" and q_value:
+                    api_params["search"] = q_value
+                    api_params["perPage"] = "150"
+                    should_fetch_all_pages = True
+                    print(f"General search for {base_effective_path} with keywords '{q_value}', perPage=150.")
+                else:
+                    should_fetch_all_pages = False
+                    print(f"Basic query for {base_effective_path}. Single page fetch.")
+            else:
+                should_fetch_all_pages = False
+                print(f"No query details for {base_effective_path}. Single page fetch.")
     
     elif not api_params: 
-        if base_effective_path in ["/nova-api/students", "/nova-api/academic-feedbacks", "/nova-api/student-activity-masters", "/nova-api/departments", "/nova-api/student-achievement-loggers", "/nova-api/academic-course-faculty-mappings", "/nova-api/periodical-statuses"]:
+        if base_effective_path in ["/nova-api/students", "/nova-api/academic-feedbacks", "/nova-api/student-activity-masters", "/nova-api/departments", "/nova-api/student-achievement-loggers", "/nova-api/academic-course-faculty-mappings", "/nova-api/periodical-statuses", "/nova-api/student-project-implementation-details", "/nova-api/student-paper-presentation-reports", "/nova-api/student-project-competition-reports", "/nova-api/student-technical-competition-reports", "/nova-api/internship-reports", "/nova-api/student-online-courses"]:
             path_query = urllib.parse.urlparse(base_effective_path).query
             path_params = urllib.parse.parse_qs(path_query)
             if "search" not in path_params and "filters" not in path_params: 
@@ -412,7 +603,13 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
                 default_filters_map = {
                     "/nova-api/student-achievement-loggers": [{"DateTime:created_at":[None,None]}],
                     "/nova-api/academic-course-faculty-mappings": [{"DateTime:created_at":[None,None]}],
-                    "/nova-api/periodical-statuses": [{"Select:periodical":""},{"Select:semester":""},{"Select:status":""}]
+                    "/nova-api/periodical-statuses": [{"Select:periodical":""},{"Select:semester":""},{"Select:status":""}],
+                    "/nova-api/student-project-implementation-details": [{"resource:student-project-details:student_project_details":""},{"resource:academic-years:academic_years":""},{"Select:semester":""},{"Select:week":""},{"Textarea:work_carried_out":""},{"Select:project_guide_verification":""},{"Date:verified_date":[None,None]},{"Select:guide_comments":""},{"DateTime:created_at":[None,None]}],
+                    "/nova-api/student-paper-presentation-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:paper_title":""},{"Date:start_date":[None,None]},{"Date:end_date":[None,None]},{"Select:status":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                    "/nova-api/student-project-competition-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:project_title":""},{"Date:from_date":[None,None]},{"Date:to_date":[None,None]},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                    "/nova-api/student-technical-competition-reports": [{"resource:student-achievement-loggers:student_achievement_loggers":""},{"Text:event_title":""},{"Select:participated_as":""},{"Date:from_date":[None,None]},{"Date:to_date":[None,None]},{"Select:sponsorship_types":""},{"Select:status":""},{"Text:winning_proof_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                    "/nova-api/internship-reports": [{"resource:internship-trackers:internship_trackers":""},{"Enum:year_of_study":""},{"resource:ssigs:ssigs":""},{"resource:special-labs:special_labs":""},{"Select:sector":""},{"Text:address_line_1":""},{"Text:address_line_2":""},{"Text:city":""},{"Text:state":""},{"Text:postal_code":""},{"Text:country":""},{"Text:industry_website":""},{"Text:industry_contact_details":""},{"Select:referred_by":""},{"Enum:stipend_amount":""},{"Select:is_aicte":""},{"Text:full_document_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}],
+                    "/nova-api/student-online-courses": [{"resource:students:students":""},{"Enum:year_of_study":""},{"resource:special-labs:special_labs":""},{"resource:online-courses:online_course":""},{"Select:course_type":""},{"Select:project_outcome":""},{"Text:other_course_name":""},{"Select:marks_available":""},{"Enum:course_exemption":""},{"Date:course_start_date":[None,None]},{"Date:course_end_date":[None,None]},{"Date:exam_date":[None,None]},{"Text:other_sponsorship_name":""},{"Text:original_proof_name":""},{"Text:attested_proof_name":""},{"Select:iqac_verification":""},{"DateTime:created_at":[None,None]}]
                 }
                 if base_effective_path in default_filters_map and "filters" not in path_params: 
                     default_filters = default_filters_map[base_effective_path]
@@ -469,6 +666,21 @@ async def ask_bip_data_with_llm(ask_request: AskBipDataRequest, request: Request
         
         if not context_for_llm and not parsed_data: 
              print(f"No data returned from API path {final_api_path_with_params} to send to LLM.")
+             
+             # Use universal smart name search for people-based APIs
+             if api_params.get("search") and base_effective_path in ["/nova-api/students", "/nova-api/faculties"]:
+                 search_term = api_params["search"]
+                 search_result = await smart_name_search(request, base_effective_path, search_term, query_details_for_llm)
+                 
+                 if search_result["success"]:
+                     llm_answer = await get_answer_from_llm(
+                         context_data=search_result["data"],
+                         user_question=user_question,
+                         query_details=query_details_for_llm
+                     )
+                     return {"answer": llm_answer, "data_source": search_result["data_source"]}
+                 else:
+                     return {"answer": search_result["message"], "data_source": search_result["data_source"]}
 
         llm_answer = await get_answer_from_llm(
             context_data=context_for_llm, 
